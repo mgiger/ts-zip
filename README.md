@@ -6,9 +6,9 @@ Just paste this class into your code and you're living large.
 
 ### Usage
 ```typescript
-const fileData: ArrayBuffer; // Archive file buffer
+const archiveData: ArrayBuffer; // Archive file buffer
 
-const archive = new ZipArchive(fileData)
+const archive = new ZipArchive(archiveData)
 for(file of archive.files) {
 	console.log(`${file.fileName}: ${file.uncompressedSize} bytes`)
 }
