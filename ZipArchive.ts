@@ -8,128 +8,38 @@
 import { inflateRawSync } from 'zlib'
 
 export class ZipArchive {
-    public files: ZipEntry[] = []
-    public dirs: ZipDirectory[] = []
+    public files: CentralFileHeader[] = []
+	private eod: DirectoryEnd
+	private view: DataView
 
     constructor(buffer: ArrayBuffer) {
-        const view: DataView = new DataView(buffer)
+        this.view = new DataView(buffer)
 
-        let eod: ZipDirectoryEnd | null = null
-        let index: number = 0
-        let bail = false
-        while(!eod && !bail) {
-            const signature = view.getUint32(index, true)
-            if (signature === 0x04034b50) {
-                const ent = new ZipEntry(view, index)
-                ent.startsAt = index + 30 + ent.fileNameLength + ent.extraLength
-                this.files.push(ent)
-                index = ent.startsAt + ent.compressedSize
-            } else if (signature === 0x02014b50){
-                const dir = new ZipDirectory(view, index)
-                this.dirs.push(dir)
-                index += 46 + dir.fileNameLength + dir.extraLength + dir.fileCommentLength
-            } else if (signature === 0x06054b50) {
-                eod = new ZipDirectoryEnd(view, index)
-            } else {
-                bail = true
-            }
-        }
+		this.eod = this.findEndOfCentralDirectory()
+
+		let offset = this.eod.centralDirectoryOffset
+		for(let i = 0; i < this.eod.numberCentralDirectoryRecords; i++) {
+			const file = new CentralFileHeader(this.view, offset)
+			this.files.push(file)
+			offset = file.nextEntryByteOffset
+		}
     }
+
+	private findEndOfCentralDirectory(): DirectoryEnd {
+		let index: number = this.view.byteLength - 22
+		while(index >= 0) {
+			const signature = this.view.getUint32(index, true)
+			if(signature === 0x06054b50) {
+				return new DirectoryEnd(this.view, index)
+			} else {
+				index--
+			}
+		}
+		throw new Error('Could not find end of central directory')
+	}
 }
 
-export class ZipEntry {
-    public signature: string
-    public version: number
-    public generalPurpose: number
-    public compressionMethod: number
-    public lastModifiedTime: number
-    public lastModifiedDate: number
-    public crc: number
-    public compressedSize: number
-    public uncompressedSize: number
-    public fileNameLength: number
-    public fileName: string
-    public extraLength: number
-    public extra?: Uint8Array
-    public startsAt: number = 0
-    private data: DataView
-
-    constructor(data: DataView, offset: number) {
-        this.data = data
-        this.signature = readString(data, offset, 4)
-        this.version = data.getUint16(offset + 4, true)
-        this.generalPurpose = data.getUint16(offset + 6, true)
-        this.compressionMethod = data.getUint16(offset + 8, true)
-        this.lastModifiedTime = data.getUint16(offset + 10, true)
-        this.lastModifiedDate = data.getUint16(offset + 12, true)
-        this.crc = data.getUint32(offset + 14, true)
-        this.compressedSize = data.getUint32(offset + 18, true)
-        this.uncompressedSize = data.getUint32(offset + 22, true)
-        this.fileNameLength = data.getUint16(offset + 26, true)
-        this.extraLength = data.getUint16(offset + 28, true)
-        this.fileName = readString(data, offset + 30, this.fileNameLength)
-        this.extra = new Uint8Array(data.buffer, offset + 30 + this.fileNameLength, this.extraLength)
-    }
-
-    public extract(): Uint8Array {
-        const buffer = this.data.buffer.slice(this.startsAt, this.startsAt + this.compressedSize)
-        if(this.compressionMethod === 0x00) {
-            return new Uint8Array(buffer)
-        } else if(this.compressionMethod === 0x08) {
-			return inflateRawSync(buffer)
-        }
-
-		return new Uint8Array(0)
-    }
-}
-
-export class ZipDirectory {
-    public signature: string
-    public versionCreated: number
-    public versionNeeded: number
-    public generalPurpose: number
-    public compressionMethod: number
-    public lastModifiedTime: number
-    public lastModifiedDate: number
-    public crc: number
-    public compressedSize: number
-    public uncompressedSize: number
-    public fileNameLength: number
-    public extraLength: number
-    public fileCommentLength: number
-    public diskNumber: number
-    public internalAttributes: number
-    public externalAttributes: number
-    public offset: number
-    public fileName: string
-    public extra: string
-    public comments: string
-
-    constructor(data: DataView, offset: number) {
-        this.signature = readString(data, offset, 4)
-        this.versionCreated = data.getUint16(offset + 4, true)
-        this.versionNeeded = data.getUint16(offset + 6, true)
-        this.generalPurpose = data.getUint16(offset + 8, true)
-        this.compressionMethod = data.getUint16(offset + 10, true)
-        this.lastModifiedTime = data.getUint16(offset + 12, true)
-        this.lastModifiedDate = data.getUint16(offset + 14, true)
-        this.crc = data.getUint32(offset + 16, true)
-        this.compressedSize = data.getUint32(offset + 20, true)
-        this.uncompressedSize = data.getUint32(offset + 24, true)
-        this.fileNameLength = data.getUint16(offset + 28, true)
-        this.extraLength = data.getUint16(offset + 30, true)
-        this.fileCommentLength = data.getUint16(offset + 32, true)
-        this.diskNumber = data.getUint16(offset + 34, true)
-        this.internalAttributes = data.getUint16(offset + 36, true)
-        this.externalAttributes = data.getUint32(offset + 38, true)
-        this.offset = data.getUint32(42, true)
-        this.fileName = readString(data, offset + 46, this.fileNameLength)
-        this.extra = readString(data, offset + 46 + this.fileNameLength, this.extraLength)
-        this.comments = readString(data, offset + 46 + this.fileNameLength + this.extraLength, this.fileCommentLength)
-    }
-}
-
-class ZipDirectoryEnd {
+class DirectoryEnd {
     public signature: string
     public numberOfDisks: number
     public centralDirectoryStartDisk: number
@@ -153,10 +63,142 @@ class ZipDirectoryEnd {
     }
 }
 
+export class CentralFileHeader {
+	public data: DataView
+
+	public signature: number
+	public madeByVersion: number
+	public extractVersion: number
+	public generalPurposeFlags: number
+	public compressionMethod: number
+	public lastModifiedTime: number
+	public lastModifiedDate: number
+	public crc: number
+	public compressedSize: number
+	public uncompressedSize: number
+	public fileNameLength: number
+	public extraLength: number
+	public commentLength: number
+	public diskNumber: number
+	public internalAttributes: number
+	public externalAttributes: number
+	public localFileHeaderOffset: number
+	public nextEntryByteOffset: number
+
+	public fileName: string
+	public extra: string
+	public comment: string
+
+	constructor(data: DataView, offset: number) {
+		this.data = data
+		this.signature = data.getUint32(offset, true)
+		this.madeByVersion = data.getUint16(offset + 4, true)
+		this.extractVersion = data.getUint16(offset + 6, true)
+		this.generalPurposeFlags = data.getUint16(offset + 8, true)
+		this.compressionMethod = data.getUint16(offset + 10, true)
+		this.lastModifiedTime = data.getUint16(offset + 12, true)
+		this.lastModifiedDate = data.getUint16(offset + 14, true)
+		this.crc = data.getUint32(offset + 16, true)
+		this.compressedSize = data.getUint32(offset + 20, true)
+		this.uncompressedSize = data.getUint32(offset + 24, true)
+		this.fileNameLength = data.getUint16(offset + 28, true)
+		this.extraLength = data.getUint16(offset + 30, true)
+		this.commentLength = data.getUint16(offset + 32, true)
+		this.diskNumber = data.getUint16(offset + 34, true)
+		this.internalAttributes = data.getUint16(offset + 36, true)
+		this.externalAttributes = data.getUint32(offset + 38, true)
+		this.localFileHeaderOffset = data.getUint32(offset + 42, true)
+		this.fileName = readString(data, offset + 46, this.fileNameLength)
+		this.extra = readString(data, offset + 46 + this.fileNameLength, this.extraLength)
+		this.comment = readString(data, offset + 46 + this.fileNameLength + this.extraLength, this.commentLength)
+
+		this.nextEntryByteOffset = offset + 46 + this.fileNameLength + this.extraLength + this.commentLength
+	}
+
+    public async extract(): Promise<ArrayBuffer> {
+		const localH = new LocalFileHeader(this.data, this.localFileHeaderOffset)
+        const buffer = this.data.buffer.slice(localH.startsAt, localH.startsAt + this.compressedSize)
+        if(this.compressionMethod === 0x00) {
+            return buffer
+        } else if(this.compressionMethod === 0x08) {
+            return await inflateRawSync(buffer)
+        } else {
+            return Promise.reject()
+        }
+    }
+}
+
+class LocalFileHeader {
+    private data: DataView
+    public signature: number
+    public version: number
+    public generalPurposeFlags: number
+    public compressionMethod: number
+    public lastModifiedTime: number
+    public lastModifiedDate: number
+    public crc: number
+    public compressedSize: number
+    public uncompressedSize: number
+    public fileNameLength: number
+    public fileName: string
+    public extraLength: number
+    public extra?: Uint32Array
+    public startsAt: number
+	public nextEntryByteOffset: number = 0
+
+    constructor(data: DataView, offset: number) {
+        this.data = data
+        this.signature = data.getUint32(offset, true)
+        this.version = data.getUint16(offset + 4, true)
+        this.generalPurposeFlags = data.getUint16(offset + 6, true)
+        this.compressionMethod = data.getUint16(offset + 8, true)
+        this.lastModifiedTime = data.getUint16(offset + 10, true)
+        this.lastModifiedDate = data.getUint16(offset + 12, true)
+        this.crc = data.getUint32(offset + 14, true)
+        this.compressedSize = data.getUint32(offset + 18, true)
+        this.uncompressedSize = data.getUint32(offset + 22, true)
+        this.fileNameLength = data.getUint16(offset + 26, true)
+        this.extraLength = data.getUint16(offset + 28, true)
+        this.fileName = readString(data, offset + 30, this.fileNameLength)
+
+		this.startsAt = offset + 30 + this.fileNameLength + this.extraLength
+		if(this.generalPurposeFlags & 0x08) {
+			this.startsAt += 16
+		}
+
+		this.nextEntryByteOffset = this.startsAt + this.compressedSize
+    }
+}
+
 const  utf8decoder = new TextDecoder('utf8')
 
 function readString(data: DataView, offset: number, length: number): string {
     const bytes = new Uint8Array(data.buffer, offset, length)
     const value = utf8decoder.decode(bytes)
     return value
+}
+
+export async function inflate(data: ArrayBuffer): Promise<ArrayBuffer> {
+	const buffer = data
+	const dstream = new DecompressionStream("deflate-raw")
+	const stream = new ReadableStream({
+		start(controller) {
+			controller.enqueue(buffer)
+			controller.close()
+		}
+	})
+
+	let done = false
+	const decompressed = []
+	const reader = stream.pipeThrough(dstream).getReader()
+	do {
+		const result = await reader.read()
+		done = result.done
+		if (result.value) {
+			decompressed.push(result.value)
+		}
+	} while (!done)
+
+	const blob = new Blob(decompressed)
+	return blob.arrayBuffer()
 }
